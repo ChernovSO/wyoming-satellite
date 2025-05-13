@@ -280,28 +280,6 @@ class SatelliteBase:
             # TTS stopped
             await self.event_to_snd(event)
             await self.trigger_tts_stop()
-            _LOGGER.info("await self.trigger_tts_stop()")
-            # ---------------- FOLLOW-UP ----------------
-            if self.settings.follow_up_seconds > 0:
-                _LOGGER.info(
-                    "Follow-up: starting new pipeline for %.1f s",
-                    self.settings.follow_up_seconds,
-                )
-                if hasattr(self, "is_streaming"):
-                    self.is_streaming = True
-                try:
-                    await self.trigger_streaming_start()   # у всех трёх Satellite-классов есть
-                except AttributeError:
-                    pass
-                # ❶ запустить новый RunPipeline со start_stage=ASR
-                await self._send_run_pipeline()
-                # ❷ по окончании окна остановить pipeline
-                async def _follow_up_timeout():
-                    await asyncio.sleep(self.settings.follow_up_seconds)
-                    _LOGGER.info("Follow-up timeout reached – pausing satellite")
-                    await self.event_to_server(PauseSatellite().event())
-
-                asyncio.create_task(_follow_up_timeout(), name="follow_up_timeout")
         elif Detect.is_type(event.type):
             # Wake word detection started
             await self.trigger_detect()
@@ -884,7 +862,28 @@ class SatelliteBase:
         """Called when audio stopped playing"""
         await run_event_command(self.settings.event.played)
         await self.forward_event(Played().event())
+        # ---------------- FOLLOW-UP ----------------
+        if self.settings.follow_up_seconds > 0:
+            _LOGGER.info(
+                "Follow-up: starting new pipeline for %.1f s",
+                self.settings.follow_up_seconds,
+            )
+            if hasattr(self, "is_streaming"):
+                self.is_streaming = True
+            try:
+                await self.trigger_streaming_start()   # у всех трёх Satellite-классов есть
+            except AttributeError:
+                pass
+            # ❶ запустить новый RunPipeline со start_stage=ASR
+            await self._send_run_pipeline()
+            # ❷ по окончании окна остановить pipeline
+            async def _follow_up_timeout():
+                await asyncio.sleep(self.settings.follow_up_seconds)
+                _LOGGER.info("Follow-up timeout reached – pausing satellite")
+                await self.event_to_server(PauseSatellite().event())
 
+            asyncio.create_task(_follow_up_timeout(), name="follow_up_timeout")
+            
     async def trigger_transcript(self, transcript: Transcript) -> None:
         """Called when speech-to-text text is received."""
         await run_event_command(self.settings.event.transcript, transcript.text)
