@@ -280,9 +280,10 @@ class SatelliteBase:
             # TTS stopped
             await self.event_to_snd(event)
             await self.trigger_tts_stop()
+            _LOGGER.info("await self.trigger_tts_stop()")
             # ---------------- FOLLOW-UP ----------------
             if self.settings.follow_up_seconds > 0:
-                _LOGGER.debug(
+                _LOGGER.info(
                     "Follow-up: starting new pipeline for %.1f s",
                     self.settings.follow_up_seconds,
                 )
@@ -291,7 +292,7 @@ class SatelliteBase:
                 # ❷ по окончании окна остановить pipeline
                 async def _follow_up_timeout():
                     await asyncio.sleep(self.settings.follow_up_seconds)
-                    _LOGGER.debug("Follow-up timeout reached – pausing satellite")
+                    _LOGGER.info("Follow-up timeout reached – pausing satellite")
                     await self.event_to_server(PauseSatellite().event())
 
                 asyncio.create_task(_follow_up_timeout(), name="follow_up_timeout")
