@@ -281,20 +281,20 @@ class SatelliteBase:
             await self.event_to_snd(event)
             await self.trigger_tts_stop()
             # ---------------- FOLLOW-UP ----------------
-            mic = getattr(self, "_mic_client", None)
-            if (mic is not None) and self.settings.follow_up_seconds > 0:
+            if self.settings.follow_up_seconds > 0:
                 _LOGGER.debug(
-                    "Follow-up: listening up to %.1f s", self.settings.follow_up_seconds
+                    "Follow-up: starting new pipeline for %.1f s",
+                    self.settings.follow_up_seconds,
                 )
-                try:
-                    audio = await mic.record_until_silence(
-                            timeout=self.settings.follow_up_seconds
-                        )
-                    if audio:
-                        _LOGGER.debug("Follow-up captured %d bytes", len(audio))
-                        await self._stt_client.transcribe_and_send(audio)
-                except asyncio.TimeoutError:
-                    _LOGGER.debug("Follow-up timeout reached")
+                # ❶ запустить новый RunPipeline со start_stage=ASR
+                await self._send_run_pipeline()
+                # ❷ по окончании окна остановить pipeline
+                async def _follow_up_timeout():
+                    await asyncio.sleep(self.settings.follow_up_seconds)
+                    _LOGGER.debug("Follow-up timeout reached – pausing satellite")
+                    await self.event_to_server(PauseSatellite().event())
+
+                asyncio.create_task(_follow_up_timeout(), name="follow_up_timeout")
         elif Detect.is_type(event.type):
             # Wake word detection started
             await self.trigger_detect()
