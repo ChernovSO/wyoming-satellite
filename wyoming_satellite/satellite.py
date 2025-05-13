@@ -281,14 +281,15 @@ class SatelliteBase:
             await self.event_to_snd(event)
             await self.trigger_tts_stop()
             # ---------------- FOLLOW-UP ----------------
-            if self.settings.follow_up_seconds > 0:
+            mic = getattr(self, "_mic_client", None)
+            if (mic is not None) and self.settings.follow_up_seconds > 0:
                 _LOGGER.debug(
                     "Follow-up: listening up to %.1f s", self.settings.follow_up_seconds
                 )
                 try:
-                    audio = await self._mic_client.record_until_silence(
-                        timeout=self.settings.follow_up_seconds
-                    )
+                    audio = await mic.record_until_silence(
+                            timeout=self.settings.follow_up_seconds
+                        )
                     if audio:
                         _LOGGER.debug("Follow-up captured %d bytes", len(audio))
                         await self._stt_client.transcribe_and_send(audio)
@@ -491,6 +492,7 @@ class SatelliteBase:
                     mic_client = self._make_mic_client()
                     assert mic_client is not None
                     await mic_client.connect()
+                    self._mic_client = mic_client
                     _LOGGER.debug("Connected to mic service")
 
                 event = await mic_client.read_event()
@@ -498,6 +500,7 @@ class SatelliteBase:
                     _LOGGER.warning("Mic service disconnected")
                     await _disconnect()
                     mic_client = None  # reconnect
+                    self._mic_client = None 
                     await asyncio.sleep(self.settings.mic.reconnect_seconds)
                     continue
 
