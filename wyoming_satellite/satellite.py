@@ -287,6 +287,12 @@ class SatelliteBase:
                     "Follow-up: starting new pipeline for %.1f s",
                     self.settings.follow_up_seconds,
                 )
+                if hasattr(self, "is_streaming"):
+                    self.is_streaming = True
+                try:
+                    await self.trigger_streaming_start()   # у всех трёх Satellite-классов есть
+                except AttributeError:
+                    pass
                 # ❶ запустить новый RunPipeline со start_stage=ASR
                 await self._send_run_pipeline()
                 # ❷ по окончании окна остановить pipeline
