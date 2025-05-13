@@ -211,6 +211,7 @@ class SatelliteSettings:
     timer: TimerSettings = field(default_factory=TimerSettings)
 
     restart_timeout: float = 5.0
+    follow_up_seconds: float = 0.0
 
     debug_recording_dir: Optional[Path] = None
     """Path to directory where debug audio is written."""

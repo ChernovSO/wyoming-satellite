@@ -297,6 +297,13 @@ async def main() -> None:
         version=__version__,
         help="Print version and exit",
     )
+    parser.add_argument(
+        "--follow-up-seconds",
+        type=float,
+        default=0.0,
+        help="Seconds to listen for follow-up after TTS played "
+             "(0 = выключено)",
+    )
     args = parser.parse_args()
 
     # Validate args
@@ -424,6 +431,7 @@ async def main() -> None:
             finished_wav_plays=int(args.timer_finished_wav_repeat[0]),
             finished_wav_delay=args.timer_finished_wav_repeat[1],
         ),
+        follow_up_seconds=args.follow_up_seconds,
         debug_recording_dir=args.debug_recording_dir,
     )
 

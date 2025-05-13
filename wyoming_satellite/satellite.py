@@ -280,6 +280,20 @@ class SatelliteBase:
             # TTS stopped
             await self.event_to_snd(event)
             await self.trigger_tts_stop()
+            # ---------------- FOLLOW-UP ----------------
+            if self.settings.follow_up_seconds > 0:
+                _LOGGER.debug(
+                    "Follow-up: listening up to %.1f s", self.settings.follow_up_seconds
+                )
+                try:
+                    audio = await self._mic_client.record_until_silence(
+                        timeout=self.settings.follow_up_seconds
+                    )
+                    if audio:
+                        _LOGGER.debug("Follow-up captured %d bytes", len(audio))
+                        await self._stt_client.transcribe_and_send(audio)
+                except asyncio.TimeoutError:
+                    _LOGGER.debug("Follow-up timeout reached")
         elif Detect.is_type(event.type):
             # Wake word detection started
             await self.trigger_detect()
