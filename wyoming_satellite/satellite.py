@@ -884,7 +884,7 @@ class SatelliteBase:
             if hasattr(self, "is_streaming"):
                 self.is_streaming = True
             try:
-                await self.trigger_streaming_start()   # у всех трёх Satellite-классов есть
+                await self.trigger_streaming_start()
             except AttributeError:
                 pass
             # ❶ запустить новый RunPipeline со start_stage=ASR
@@ -892,9 +892,9 @@ class SatelliteBase:
 
             loop = asyncio.get_running_loop()
             def _timeout():
-                _LOGGER.debug("Follow-up timeout – pausing satellite")
+                _LOGGER.info("Follow-up timeout – stopping STT (no speech detected)")
                 self._follow_up_timer = None
-                asyncio.create_task(self.event_to_server(PauseSatellite().event()))
+                asyncio.create_task(self.trigger_stt_stop())
             self._follow_up_timer = loop.call_later(
                 self.settings.follow_up_seconds, _timeout
             )
