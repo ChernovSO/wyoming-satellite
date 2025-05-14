@@ -252,6 +252,24 @@ class SatelliteBase:
     async def stopped(self) -> None:
         """Called when satellite has stopped."""
 
+    async def wait_for_voice_activity(self, timeout: float = 3.0) -> bool:
+        """Ждёт голосовую активность после TTS. Возвращает True если активность была."""
+        self._voice_detected = False
+
+        def on_voice_start(event):
+            self._voice_detected = True
+
+        self._voice_event_listener = on_voice_start
+        self._vad_timer = asyncio.get_event_loop().call_later(
+            timeout, self._vad_timeout_event.set
+        )
+        self._vad_timeout_event = asyncio.Event()
+
+        await self._vad_timeout_event.wait()
+
+        self._voice_event_listener = None
+        return self._voice_detected
+
     async def event_from_server(self, event: Event) -> None:
         """Called when an event is received from the server."""
         forward_event = True
@@ -291,19 +309,11 @@ class SatelliteBase:
             _LOGGER.debug("Wake word detected")
             await self.trigger_detection(Detection.from_event(event))
         elif VoiceStarted.is_type(event.type):
-            # ---- cancel follow-up timer if user заговорил ----
-            if self._follow_up_timer is not None:
-                self._follow_up_timer.cancel()
-                self._follow_up_timer = None
-                _LOGGER.debug("Follow-up timer cancelled (speech detected)")
+            if self._voice_event_listener:
+                self._voice_event_listener(event)
             # STT start
             await self.trigger_stt_start()
         elif VoiceStopped.is_type(event.type):
-            # ---- cancel follow-up timer if user заговорил ----
-            if self._follow_up_timer is not None:
-                self._follow_up_timer.cancel()
-                self._follow_up_timer = None
-                _LOGGER.debug("Follow-up timer cancelled (speech detected)")
             # STT stop
             await self.trigger_stt_stop()
         elif Transcript.is_type(event.type):
@@ -876,28 +886,12 @@ class SatelliteBase:
         await run_event_command(self.settings.event.played)
         await self.forward_event(Played().event())
         # ---------------- FOLLOW-UP ----------------
-        if self.settings.follow_up_seconds > 0:
-            _LOGGER.info(
-                "Follow-up: starting new pipeline for %.1f s",
-                self.settings.follow_up_seconds,
-            )
-            if hasattr(self, "is_streaming"):
-                self.is_streaming = True
-            try:
-                await self.trigger_streaming_start()
-            except AttributeError:
-                pass
-            # ❶ запустить новый RunPipeline со start_stage=ASR
+        if await self.wait_for_voice_activity(timeout=5.0):
+            _LOGGER.info("Voice detected in follow-up window – running pipeline")
             await self._send_run_pipeline()
-
-            loop = asyncio.get_running_loop()
-            def _timeout():
-                _LOGGER.info("Follow-up timeout – stopping STT (no speech detected)")
-                self._follow_up_timer = None
-                asyncio.create_task(self.trigger_stt_stop())
-            self._follow_up_timer = loop.call_later(
-                self.settings.follow_up_seconds, _timeout
-            )
+        else:
+            _LOGGER.info("No voice detected – returning to wake word")
+            await self.event_to_server(PauseSatellite().event())
 
     async def trigger_transcript(self, transcript: Transcript) -> None:
         """Called when speech-to-text text is received."""
