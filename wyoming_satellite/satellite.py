@@ -110,6 +110,9 @@ class SatelliteBase:
                 settings.debug_recording_dir, "stt"
             )
 
+        self._follow_up_timer: Optional[asyncio.TimerHandle] = None
+
+
     @property
     def is_running(self) -> bool:
         """True if not stopping/stopped."""
@@ -288,9 +291,19 @@ class SatelliteBase:
             _LOGGER.debug("Wake word detected")
             await self.trigger_detection(Detection.from_event(event))
         elif VoiceStarted.is_type(event.type):
+            # ---- cancel follow-up timer if user заговорил ----
+            if self._follow_up_timer is not None:
+                self._follow_up_timer.cancel()
+                self._follow_up_timer = None
+                _LOGGER.debug("Follow-up timer cancelled (speech detected)")
             # STT start
             await self.trigger_stt_start()
         elif VoiceStopped.is_type(event.type):
+            # ---- cancel follow-up timer if user заговорил ----
+            if self._follow_up_timer is not None:
+                self._follow_up_timer.cancel()
+                self._follow_up_timer = None
+                _LOGGER.debug("Follow-up timer cancelled (speech detected)")
             # STT stop
             await self.trigger_stt_stop()
         elif Transcript.is_type(event.type):
@@ -876,14 +889,16 @@ class SatelliteBase:
                 pass
             # ❶ запустить новый RunPipeline со start_stage=ASR
             await self._send_run_pipeline()
-            # ❷ по окончании окна остановить pipeline
-            async def _follow_up_timeout():
-                await asyncio.sleep(self.settings.follow_up_seconds)
-                _LOGGER.info("Follow-up timeout reached – pausing satellite")
-                await self.event_to_server(PauseSatellite().event())
 
-            asyncio.create_task(_follow_up_timeout(), name="follow_up_timeout")
-            
+            loop = asyncio.get_running_loop()
+            def _timeout():
+                _LOGGER.debug("Follow-up timeout – pausing satellite")
+                self._follow_up_timer = None
+                asyncio.create_task(self.event_to_server(PauseSatellite().event()))
+            self._follow_up_timer = loop.call_later(
+                self.settings.follow_up_seconds, _timeout
+            )
+
     async def trigger_transcript(self, transcript: Transcript) -> None:
         """Called when speech-to-text text is received."""
         await run_event_command(self.settings.event.transcript, transcript.text)
