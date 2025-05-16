@@ -110,8 +110,7 @@ class SatelliteBase:
                 settings.debug_recording_dir, "stt"
             )
 
-        self._follow_up_timer: Optional[asyncio.TimerHandle] = None
-
+        self.follow_up_task: Optional[asyncio.Task] = None
 
     @property
     def is_running(self) -> bool:
@@ -252,26 +251,17 @@ class SatelliteBase:
     async def stopped(self) -> None:
         """Called when satellite has stopped."""
 
-    async def wait_for_voice_activity(self, timeout: float = 3.0) -> bool:
-        """Ждёт голосовую активность после TTS. Возвращает True если активность была."""
-        self._voice_detected = False
-
-        def on_voice_start(event):
-            self._voice_detected = True
-
-        self._voice_event_listener = on_voice_start
-        self._vad_timer = asyncio.get_event_loop().call_later(
-            timeout, self._vad_timeout_event.set
-        )
-        self._vad_timeout_event = asyncio.Event()
-
-        await self._vad_timeout_event.wait()
-
-        self._voice_event_listener = None
-        return self._voice_detected
-
     async def event_from_server(self, event: Event) -> None:
         """Called when an event is received from the server."""
+
+        # ── Безопасно завершаем follow-up-task, если pipeline закрылся ──
+        if self.follow_up_task is not None and not self.follow_up_task.done():
+            # эти типы событий говорят, что «основной» пайплайн закончился
+            if Transcript.is_type(event.type) or Error.is_type(event.type):
+                self.follow_up_task.cancel()
+                self.follow_up_task = None
+                _LOGGER.debug("Follow-up task cancelled (pipeline finished)")
+
         forward_event = True
 
         if Ping.is_type(event.type):
@@ -309,8 +299,6 @@ class SatelliteBase:
             _LOGGER.debug("Wake word detected")
             await self.trigger_detection(Detection.from_event(event))
         elif VoiceStarted.is_type(event.type):
-            if self._voice_event_listener:
-                self._voice_event_listener(event)
             # STT start
             await self.trigger_stt_start()
         elif VoiceStopped.is_type(event.type):
@@ -343,6 +331,72 @@ class SatelliteBase:
         # Forward everything except audio/ping/pong to event service
         if forward_event:
             await self.forward_event(event)
+    
+    async def _follow_up_window(self) -> None:
+        """Listen for speech up to follow_up_seconds.
+        Start streaming pipeline if speech detected.
+        """
+        mic: Optional[AsyncClient] = getattr(self, "_mic_client", None)
+        if mic is None:
+            _LOGGER.info("No mic client – follow-up cancelled")
+            return
+
+        vad = SileroVad(
+            threshold=self.settings.vad.threshold,
+            trigger_level=self.settings.vad.trigger_level,
+        )
+        # буфер 0.4 с (надо попробовать подстроить)
+        pre_speech = RingBuffer(maxlen=int(0.4 * 16000 * 2))  # 16 kHz, 16-bit
+        deadline = time.monotonic() + self.settings.follow_up_seconds
+        _LOGGER.info("Follow-up window opened (%.1f s)", self.settings.follow_up_seconds)
+
+        while time.monotonic() < deadline:
+            timeout = deadline - time.monotonic()
+            try:
+                event = await asyncio.wait_for(mic.read_event(), timeout=timeout)
+            except asyncio.TimeoutError:
+                break
+
+            if (event is None) or self.microphone_muted:
+                continue
+
+            if AudioChunk.is_type(event.type):
+                chunk = AudioChunk.from_event(event)
+                audio = chunk.audio
+
+                if vad(audio):  # ---- speech detected ----
+                    _LOGGER.info("Follow-up: speech detected, starting streaming")
+                    # включаем normal streaming
+                    if hasattr(self, "is_streaming"):
+                        self.is_streaming = True
+                    try:
+                        await self.trigger_streaming_start()
+                    except AttributeError:
+                        pass
+
+                    # RunPipeline (ASR->…)
+                    await self._send_run_pipeline()
+
+                    # ➜ сначала буфер до речи
+                    if pre_speech.getvalue():
+                        await self.event_to_server(
+                            AudioChunk(
+                                rate=chunk.rate,
+                                width=chunk.width,
+                                channels=chunk.channels,
+                                audio=pre_speech.getvalue(),
+                            ).event()
+                        )
+                    # ➜ потом сам первый Chunk
+                    await self.event_to_server(event)
+                    _LOGGER.info("Follow-up: streaming handed to normal path")
+                    return  # дальше event_from_mic займётся потоком
+
+                else:
+                    pre_speech.put(audio)
+
+        _LOGGER.info("Follow-up window expired without speech")
+        # ничего не делаем → вернёмся к wake-word
 
     async def _send_run_pipeline(self, pipeline_name: Optional[str] = None) -> None:
         """Sends a RunPipeline event with the correct stages."""
@@ -500,7 +554,6 @@ class SatelliteBase:
                     mic_client = self._make_mic_client()
                     assert mic_client is not None
                     await mic_client.connect()
-                    self._mic_client = mic_client
                     _LOGGER.debug("Connected to mic service")
 
                 event = await mic_client.read_event()
@@ -508,7 +561,6 @@ class SatelliteBase:
                     _LOGGER.warning("Mic service disconnected")
                     await _disconnect()
                     mic_client = None  # reconnect
-                    self._mic_client = None 
                     await asyncio.sleep(self.settings.mic.reconnect_seconds)
                     continue
 
@@ -885,13 +937,13 @@ class SatelliteBase:
         """Called when audio stopped playing"""
         await run_event_command(self.settings.event.played)
         await self.forward_event(Played().event())
-        # ---------------- FOLLOW-UP ----------------
-        if await self.wait_for_voice_activity(timeout=5.0):
-            _LOGGER.info("Voice detected in follow-up window – running pipeline")
-            await self._send_run_pipeline()
-        else:
-            _LOGGER.info("No voice detected – returning to wake word")
-            await self.event_to_server(PauseSatellite().event())
+        # ---- FOLLOW-UP (mini-vad) ----
+        if self.settings.follow_up_seconds > 0:
+            if self.follow_up_task is not None:
+                self.follow_up_task.cancel()
+            self.follow_up_task = asyncio.create_task(
+                self._follow_up_window(), name="follow_up_window"
+            )
 
     async def trigger_transcript(self, transcript: Transcript) -> None:
         """Called when speech-to-text text is received."""
