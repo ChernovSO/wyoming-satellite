@@ -259,14 +259,6 @@ class SatelliteBase:
     async def event_from_server(self, event: Event) -> None:
         """Called when an event is received from the server."""
 
-        # ── Безопасно завершаем follow-up-task, если pipeline закрылся ──
-        if self.follow_up_task is not None and not self.follow_up_task.done():
-            # эти типы событий говорят, что «основной» пайплайн закончился
-            if Transcript.is_type(event.type) or Error.is_type(event.type):
-                self.follow_up_task.cancel()
-                self.follow_up_task = None
-                _LOGGER.debug("Follow-up task cancelled (pipeline finished)")
-
         forward_event = True
 
         if Ping.is_type(event.type):
@@ -339,72 +331,6 @@ class SatelliteBase:
         # Forward everything except audio/ping/pong to event service
         if forward_event:
             await self.forward_event(event)
-    
-    async def _follow_up_window(self) -> None:
-        """Listen for speech up to follow_up_seconds.
-        Start streaming pipeline if speech detected.
-        """
-        mic: Optional[AsyncClient] = getattr(self, "_mic_client", None)
-        if mic is None:
-            _LOGGER.info("No mic client – follow-up cancelled")
-            return
-
-        vad = SileroVad(
-            threshold=self.settings.vad.threshold,
-            trigger_level=self.settings.vad.trigger_level,
-        )
-        # буфер 0.4 с (надо попробовать подстроить)
-        pre_speech = RingBuffer(maxlen=int(0.4 * 16000 * 2))  # 16 kHz, 16-bit
-        deadline = time.monotonic() + self.settings.follow_up_seconds
-        _LOGGER.info("Follow-up window opened (%.1f s)", self.settings.follow_up_seconds)
-
-        while time.monotonic() < deadline:
-            timeout = deadline - time.monotonic()
-            try:
-                event = await asyncio.wait_for(mic.read_event(), timeout=timeout)
-            except asyncio.TimeoutError:
-                break
-
-            if (event is None) or self.microphone_muted:
-                continue
-
-            if AudioChunk.is_type(event.type):
-                chunk = AudioChunk.from_event(event)
-                audio = chunk.audio
-
-                if vad(audio):  # ---- speech detected ----
-                    _LOGGER.info("Follow-up: speech detected, starting streaming")
-                    # включаем normal streaming
-                    if hasattr(self, "is_streaming"):
-                        self.is_streaming = True
-                    try:
-                        await self.trigger_streaming_start()
-                    except AttributeError:
-                        pass
-
-                    # RunPipeline (ASR->…)
-                    await self._send_run_pipeline()
-
-                    # ➜ сначала буфер до речи
-                    if pre_speech.getvalue():
-                        await self.event_to_server(
-                            AudioChunk(
-                                rate=chunk.rate,
-                                width=chunk.width,
-                                channels=chunk.channels,
-                                audio=pre_speech.getvalue(),
-                            ).event()
-                        )
-                    # ➜ потом сам первый Chunk
-                    await self.event_to_server(event)
-                    _LOGGER.info("Follow-up: streaming handed to normal path")
-                    return  # дальше event_from_mic займётся потоком
-
-                else:
-                    pre_speech.put(audio)
-
-        _LOGGER.info("Follow-up window expired without speech")
-        # ничего не делаем → вернёмся к wake-word
 
     async def _send_run_pipeline(self, pipeline_name: Optional[str] = None) -> None:
         """Sends a RunPipeline event with the correct stages."""
@@ -1085,14 +1011,6 @@ class AlwaysStreamingSatellite(SatelliteBase):
 
     async def event_from_server(self, event: Event) -> None:
 
-        # ── Безопасно завершаем follow-up-task, если pipeline закрылся ──
-        if self.follow_up_task is not None and not self.follow_up_task.done():
-            # эти типы событий говорят, что «основной» пайплайн закончился
-            if Transcript.is_type(event.type) or Error.is_type(event.type):
-                self.follow_up_task.cancel()
-                self.follow_up_task = None
-                _LOGGER.debug("Follow-up task cancelled (pipeline finished)")
-
         await super().event_from_server(event)
 
         if RunSatellite.is_type(event.type):
@@ -1230,14 +1148,6 @@ class VadStreamingSatellite(SatelliteBase):
         self._is_paused = False
 
     async def event_from_server(self, event: Event) -> None:
-
-        # ── Безопасно завершаем follow-up-task, если pipeline закрылся ──
-        if self.follow_up_task is not None and not self.follow_up_task.done():
-            # эти типы событий говорят, что «основной» пайплайн закончился
-            if Transcript.is_type(event.type) or Error.is_type(event.type):
-                self.follow_up_task.cancel()
-                self.follow_up_task = None
-                _LOGGER.debug("Follow-up task cancelled (pipeline finished)")
 
         await super().event_from_server(event)
 
@@ -1456,14 +1366,6 @@ class WakeStreamingSatellite(SatelliteBase):
         self._wake_info_ready = asyncio.Event()
 
     async def event_from_server(self, event: Event) -> None:
-
-                # ── Безопасно завершаем follow-up-task, если pipeline закрылся ──
-        if self.follow_up_task is not None and not self.follow_up_task.done():
-            # эти типы событий говорят, что «основной» пайплайн закончился
-            if Transcript.is_type(event.type) or Error.is_type(event.type):
-                self.follow_up_task.cancel()
-                self.follow_up_task = None
-                _LOGGER.debug("Follow-up task cancelled (pipeline finished)")
 
         # Only check event types once
         is_run_satellite = False
