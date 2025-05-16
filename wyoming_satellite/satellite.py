@@ -554,6 +554,7 @@ class SatelliteBase:
                     mic_client = self._make_mic_client()
                     assert mic_client is not None
                     await mic_client.connect()
+                    self._mic_client = mic_client
                     _LOGGER.debug("Connected to mic service")
 
                 event = await mic_client.read_event()
@@ -561,6 +562,7 @@ class SatelliteBase:
                     _LOGGER.warning("Mic service disconnected")
                     await _disconnect()
                     mic_client = None  # reconnect
+                    self._mic_client = None
                     await asyncio.sleep(self.settings.mic.reconnect_seconds)
                     continue
 
