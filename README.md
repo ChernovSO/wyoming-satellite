@@ -1,4 +1,4 @@
-# Wyoming Satellite (RZhD Fork)
+# Wyoming Satellite (RZD Fork)
 
 Пропатченная версия [Wyoming Satellite](https://github.com/rhasspy/wyoming-satellite) для голосового ассистента РЖД.
 
