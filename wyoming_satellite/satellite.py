@@ -258,7 +258,6 @@ class SatelliteBase:
 
     async def event_from_server(self, event: Event) -> None:
         """Called when an event is received from the server."""
-
         forward_event = True
 
         if Ping.is_type(event.type):
@@ -302,9 +301,6 @@ class SatelliteBase:
             # STT stop
             await self.trigger_stt_stop()
         elif Transcript.is_type(event.type):
-            self.follow_up_active = False            # окно закрыто
-            self._follow_vad = None
-            self._follow_buffer = None
             # STT text
             _LOGGER.debug(event)
             await self.trigger_transcript(Transcript.from_event(event))
@@ -1010,7 +1006,6 @@ class AlwaysStreamingSatellite(SatelliteBase):
             _LOGGER.warning("Local wake word detection is enabled but will not be used")
 
     async def event_from_server(self, event: Event) -> None:
-
         await super().event_from_server(event)
 
         if RunSatellite.is_type(event.type):
@@ -1026,11 +1021,6 @@ class AlwaysStreamingSatellite(SatelliteBase):
             if self.stt_audio_writer is not None:
                 self.stt_audio_writer.start()
         elif Transcript.is_type(event.type) or Error.is_type(event.type):
-
-            self.follow_up_active = False            # окно закрыто
-            self._follow_vad = None
-            self._follow_buffer = None
-
             # Stop debug recording
             if self.stt_audio_writer is not None:
                 self.stt_audio_writer.stop()
@@ -1046,58 +1036,6 @@ class AlwaysStreamingSatellite(SatelliteBase):
     async def event_from_mic(
         self, event: Event, audio_bytes: Optional[bytes] = None
     ) -> None:
-        
-                # follow-up обработка, если окно активно и ещё не стримим
-        if (
-            self.follow_up_active
-            and not self.is_streaming
-            and AudioChunk.is_type(event.type)
-            and not self.microphone_muted
-        ):
-            chunk = AudioChunk.from_event(event)
-            audio = chunk.audio
-
-            # timeout окна?
-            if time.monotonic() >= self._follow_up_deadline:
-                self.follow_up_active = False
-                _LOGGER.debug("Follow-up timeout → возвращаемся к wake-word")
-            else:
-                # проверяем VAD
-                if self._follow_vad(audio):
-                    _LOGGER.debug("Follow-up: speech detected, стартуем pipeline")
-                    self.follow_up_active = False
-
-                    # включаем normal streaming
-                    if hasattr(self, "is_streaming"):
-                        self.is_streaming = True
-                    try:
-                        await self.trigger_streaming_start()
-                    except AttributeError:
-                        pass
-
-                    # RunPipeline
-                    await self._send_run_pipeline()
-
-                    # отправляем буфер до речи
-                    if self._follow_buffer and self._follow_buffer.getvalue():
-                        await self.event_to_server(
-                            AudioChunk(
-                                rate=chunk.rate,
-                                width=chunk.width,
-                                channels=chunk.channels,
-                                audio=self._follow_buffer.getvalue(),
-                            ).event()
-                        )
-                    # а затем сразу текущий chunk
-                    await self.event_to_server(event)
-                    _LOGGER.debug("Follow-up: перешёл в обычный streaming")
-                    return  # дальше стандартная логика
-                else:
-                    # пока тишина — пополняем pre-speech буфер
-                    if self._follow_buffer is not None:
-                        self._follow_buffer.put(audio)
-            return  # не передаём wake/vad поток дальше, пока не стримим
-
         if (not self.is_streaming) or self.microphone_muted:
             return
 
@@ -1148,7 +1086,6 @@ class VadStreamingSatellite(SatelliteBase):
         self._is_paused = False
 
     async def event_from_server(self, event: Event) -> None:
-
         await super().event_from_server(event)
 
         if RunSatellite.is_type(event.type):
@@ -1163,11 +1100,6 @@ class VadStreamingSatellite(SatelliteBase):
             or Error.is_type(event.type)
             or PauseSatellite.is_type(event.type)
         ):
-            
-            self.follow_up_active = False            # окно закрыто
-            self._follow_vad = None
-            self._follow_buffer = None
-
             if PauseSatellite.is_type(event.type):
                 self._is_paused = True
                 _LOGGER.debug("Satellite paused")
@@ -1181,60 +1113,6 @@ class VadStreamingSatellite(SatelliteBase):
     async def event_from_mic(
         self, event: Event, audio_bytes: Optional[bytes] = None
     ) -> None:
-        # -------------------------------------------------------------
-        # FOLLOW-UP mini-VAD (использует уже полученный AudioChunk)
-        # -------------------------------------------------------------
-        if (
-            self.follow_up_active
-            and not self.is_streaming       # пока не начали обычный streaming
-            and AudioChunk.is_type(event.type)
-            and not self.microphone_muted
-        ):
-            chunk = AudioChunk.from_event(event)
-            audio = chunk.audio
-
-            # таймаут окна?
-            if time.monotonic() >= self._follow_up_deadline:
-                self.follow_up_active = False
-                self._follow_vad = None
-                self._follow_buffer = None
-                _LOGGER.debug("Follow-up timeout → возвращаемся к wake-word")
-                return  # тишина, остановились
-
-            # проверка VAD
-            if self._follow_vad(audio):
-                _LOGGER.debug("Follow-up: speech detected, стартуем pipeline")
-                self.follow_up_active = False
-                # включаем normal streaming
-                if hasattr(self, "is_streaming"):
-                    self.is_streaming = True
-                try:
-                    await self.trigger_streaming_start()
-                except AttributeError:
-                    pass
-                # RunPipeline (ASR→TTS)
-                await self._send_run_pipeline()
-                # отправляем pre-speech буфер
-                if self._follow_buffer and self._follow_buffer.getvalue():
-                    await self.event_to_server(
-                        AudioChunk(
-                            rate=chunk.rate,
-                            width=chunk.width,
-                            channels=chunk.channels,
-                            audio=self._follow_buffer.getvalue(),
-                        ).event()
-                    )
-                # затем текущий chunk
-                await self.event_to_server(event)
-                _LOGGER.debug("Follow-up: передано в обычный streaming")
-                return  # дальнейшую обработку сделает базовый код
-
-            else:
-                # пока речи нет – копим в буфере
-                if self._follow_buffer is not None:
-                    self._follow_buffer.put(audio)
-            return  # не передаём chunk дальше, пока речь не началась
-
         if (
             (not AudioChunk.is_type(event.type))
             or self.microphone_muted
@@ -1366,7 +1244,6 @@ class WakeStreamingSatellite(SatelliteBase):
         self._wake_info_ready = asyncio.Event()
 
     async def event_from_server(self, event: Event) -> None:
-
         # Only check event types once
         is_run_satellite = False
         is_pause_satellite = False
@@ -1482,7 +1359,7 @@ class WakeStreamingSatellite(SatelliteBase):
                 # затем текущий chunk
                 await self.event_to_server(event)
                 _LOGGER.debug("Follow-up: передано в обычный streaming")
-                return  # дальнейшую обработку сделает базовый код
+                return  
 
             else:
                 # пока речи нет – копим в буфере
