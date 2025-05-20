@@ -234,14 +234,40 @@ class SatelliteBase:
         except Exception:
             _LOGGER.exception("Unexpected error in ping server task")
     
-    async def _watchdog_loop(self):
-        TIMEOUT = 30     # сек
+    async def _watchdog_loop(self) -> None:
+        """Перезапускает поток при отсутствии активности более TIMEOUT."""
+        TIMEOUT = 30        # секунд тишины
+        SOFT_RESET = 2      # сколько подряд time-out считается «залипанием»
+        self._wd_misses = 0
+
         while self.is_running:
             await asyncio.sleep(5)
-            if (time.monotonic() - self._last_activity) > TIMEOUT:
-                _LOGGER.warning("Watchdog: no activity %ss → pause pipeline", TIMEOUT)
-                await self.event_to_server(PauseSatellite().event())
-                self._last_activity = time.monotonic()
+            if (time.monotonic() - self._last_activity) <= TIMEOUT:
+                self._wd_misses = 0          # всё в порядке
+                continue
+
+            # ── timeout ─────────────────────────────────
+            self._wd_misses += 1
+            _LOGGER.warning("Watchdog: no activity %ss → soft pause (%s)",
+                            TIMEOUT, self._wd_misses)
+
+            # 1) мягкая пауза: сбрасываем все флаги и уведомляем HA
+            self.follow_up_active = False
+            self.is_streaming = False
+            self._follow_vad = None
+            self._follow_buffer = None
+            await self.trigger_streaming_stop()               # гасим LEDʼы
+            # посылаем AudioStop → HA прекращает ждать STT
+            await self.event_to_server(AudioStop().event())
+            await self.event_to_server(PauseSatellite().event())
+            self._last_activity = time.monotonic()
+
+            # 2) если подряд N раз таймаут → перезапускаем сервис-таски
+            if self._wd_misses >= SOFT_RESET:
+                _LOGGER.error("Watchdog: %s consecutive timeouts → restart services",
+                            SOFT_RESET)
+                self.state = State.RESTARTING                 # задействует _restart()
+                self._wd_misses = 0
 
     # -------------------------------------------------------------------------
 
@@ -1261,7 +1287,7 @@ class WakeStreamingSatellite(SatelliteBase):
         is_transcript = False
         is_error = False
 
-        if event.type in ("Detection", "VoiceStarted", "VoiceStopped", "AudioChunk"):
+        if event.type in ("Detection", "VoiceStarted", "VoiceStopped", "AudioChunk", "AudioStart", "AudioStop"):
             self._last_activity = time.monotonic()
 
         if RunSatellite.is_type(event.type):
