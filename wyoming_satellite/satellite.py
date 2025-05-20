@@ -110,7 +110,9 @@ class SatelliteBase:
                 settings.debug_recording_dir, "stt"
             )
 
-        # self.follow_up_task: Optional[asyncio.Task] = None
+        self._last_activity = time.monotonic()
+        self._watchdog_task = asyncio.create_task(self._watchdog_loop(), name="watchdog")
+
         self.follow_up_active = False          # окно открыто?
         self._follow_up_deadline = 0.0         # time.monotonic() конца окна
         self._follow_vad: Optional[SileroVad] = None
@@ -177,7 +179,7 @@ class SatelliteBase:
         self._writer = None
         self._disable_ping()
 
-        _LOGGER.debug("Server disconnected")
+        _LOGGER.info("Server disconnected")
         await self.trigger_server_disonnected()
 
     async def event_to_server(self, event: Event) -> None:
@@ -231,6 +233,15 @@ class SatelliteBase:
             pass
         except Exception:
             _LOGGER.exception("Unexpected error in ping server task")
+    
+    async def _watchdog_loop(self):
+        TIMEOUT = 30     # сек
+        while self.is_running:
+            await asyncio.sleep(5)
+            if (time.monotonic() - self._last_activity) > TIMEOUT:
+                _LOGGER.warning("Watchdog: no activity %ss → pause pipeline", TIMEOUT)
+                await self.event_to_server(PauseSatellite().event())
+                self._last_activity = time.monotonic()
 
     # -------------------------------------------------------------------------
 
@@ -426,7 +437,7 @@ class SatelliteBase:
             self._event_task.cancel()
             self._event_task = None
 
-        _LOGGER.debug("Disconnected from services")
+        _LOGGER.info("Disconnected from services")
 
     # -------------------------------------------------------------------------
     # Microphone
@@ -485,7 +496,7 @@ class SatelliteBase:
                     assert mic_client is not None
                     await mic_client.connect()
                     self._mic_client = mic_client
-                    _LOGGER.debug("Connected to mic service")
+                    _LOGGER.info("Connected to mic service")
 
                 event = await mic_client.read_event()
                 if event is None:
@@ -665,7 +676,7 @@ class SatelliteBase:
                     seconds_to_mute = wav_file.getnframes() / wav_file.getframerate()
 
                 seconds_to_mute += self.settings.mic.seconds_to_mute_after_awake_wav
-                _LOGGER.debug("Muting microphone for %s second(s)", seconds_to_mute)
+                _LOGGER.info("Muting microphone for %s second(s)", seconds_to_mute)
                 self.microphone_muted = True
                 self._unmute_microphone_task = asyncio.create_task(
                     self._unmute_microphone_after(seconds_to_mute)
@@ -685,7 +696,7 @@ class SatelliteBase:
     async def _unmute_microphone_after(self, seconds: float) -> None:
         await asyncio.sleep(seconds)
         self.microphone_muted = False
-        _LOGGER.debug("Unmuted microphone")
+        _LOGGER.info("Unmuted microphone")
 
     # -------------------------------------------------------------------------
     # Wake
@@ -749,7 +760,7 @@ class SatelliteBase:
                     wake_client = self._make_wake_client()
                     assert wake_client is not None
                     await wake_client.connect()
-                    _LOGGER.debug("Connected to wake service")
+                    _LOGGER.info("Connected to wake service")
 
                     # Reset
                     from_client_task = None
@@ -871,7 +882,7 @@ class SatelliteBase:
         await self.forward_event(Played().event())
         # ---- FOLLOW-UP (mini-vad) ----
         if self.settings.follow_up_seconds > 0:
-            _LOGGER.debug("Follow-up: %.1f s window", self.settings.follow_up_seconds)
+            _LOGGER.info("Follow-up: %.1f s window", self.settings.follow_up_seconds)
 
             # инициализируем VAD + буфер
             self._follow_vad = SileroVad(
@@ -1250,6 +1261,9 @@ class WakeStreamingSatellite(SatelliteBase):
         is_transcript = False
         is_error = False
 
+        if event.type in ("Detection", "VoiceStarted", "VoiceStopped", "AudioChunk"):
+            self._last_activity = time.monotonic()
+
         if RunSatellite.is_type(event.type):
             is_run_satellite = True
             self._is_paused = False
@@ -1262,6 +1276,8 @@ class WakeStreamingSatellite(SatelliteBase):
             self._follow_buffer = None
             is_transcript = True
         elif Error.is_type(event.type):
+            self.follow_up_active = False            # окно закрыто
+            self._follow_buffer = None
             is_error = True
 
         if is_transcript or is_pause_satellite:
@@ -1280,8 +1296,10 @@ class WakeStreamingSatellite(SatelliteBase):
             self.is_streaming = False
 
             if is_pause_satellite:
+                self.follow_up_active = False            # окно закрыто
+                self._follow_buffer = None
                 self._is_paused = True
-                _LOGGER.debug("Satellite is paused")
+                _LOGGER.info("Satellite is paused")
             else:
                 # Go back to wake word detection
                 await self.trigger_streaming_stop()
@@ -1330,12 +1348,12 @@ class WakeStreamingSatellite(SatelliteBase):
                 self.follow_up_active = False
                 self._follow_vad = None
                 self._follow_buffer = None
-                _LOGGER.debug("Follow-up timeout → возвращаемся к wake-word")
+                _LOGGER.info("Follow-up timeout → возвращаемся к wake-word")
                 return  # тишина, остановились
 
             # проверка VAD
             if self._follow_vad(audio):
-                _LOGGER.debug("Follow-up: speech detected, стартуем pipeline")
+                _LOGGER.info("Follow-up: speech detected, стартуем pipeline")
                 self.follow_up_active = False
                 # включаем normal streaming
                 if hasattr(self, "is_streaming"):
@@ -1358,7 +1376,7 @@ class WakeStreamingSatellite(SatelliteBase):
                     )
                 # затем текущий chunk
                 await self.event_to_server(event)
-                _LOGGER.debug("Follow-up: передано в обычный streaming")
+                _LOGGER.info("Follow-up: передано в обычный streaming")
                 return  
 
             else:
@@ -1411,7 +1429,7 @@ class WakeStreamingSatellite(SatelliteBase):
             if (refractory_timestamp is not None) and (
                 refractory_timestamp > time.monotonic()
             ):
-                _LOGGER.debug("Wake word detection occurred during refractory period")
+                _LOGGER.info("Wake word detection occurred during refractory period")
                 return
 
             # Stop debug recording (wake)
@@ -1422,10 +1440,10 @@ class WakeStreamingSatellite(SatelliteBase):
             if self.stt_audio_writer is not None:
                 self.stt_audio_writer.start(timestamp=self._debug_recording_timestamp)
 
-            _LOGGER.debug(detection)
+            _LOGGER.info(detection)
 
             self.is_streaming = True
-            _LOGGER.debug("Streaming audio")
+            _LOGGER.info("Streaming audio")
 
             if self.settings.wake.refractory_seconds is not None:
                 # Another detection may not occur for this wake word until
