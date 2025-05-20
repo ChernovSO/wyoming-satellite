@@ -235,39 +235,16 @@ class SatelliteBase:
             _LOGGER.exception("Unexpected error in ping server task")
     
     async def _watchdog_loop(self) -> None:
-        """Перезапускает поток при отсутствии активности более TIMEOUT."""
-        TIMEOUT = 30        # секунд тишины
-        SOFT_RESET = 2      # сколько подряд time-out считается «залипанием»
-        self._wd_misses = 0
-
+        TIMEOUT = 30          # сек без активности → рестарт
         while self.is_running:
             await asyncio.sleep(5)
             if (time.monotonic() - self._last_activity) <= TIMEOUT:
-                self._wd_misses = 0          # всё в порядке
                 continue
 
-            # ── timeout ─────────────────────────────────
-            self._wd_misses += 1
-            _LOGGER.warning("Watchdog: no activity %ss → soft pause (%s)",
-                            TIMEOUT, self._wd_misses)
-
-            # 1) мягкая пауза: сбрасываем все флаги и уведомляем HA
-            self.follow_up_active = False
-            self.is_streaming = False
-            self._follow_vad = None
-            self._follow_buffer = None
-            await self.trigger_streaming_stop()               # гасим LEDʼы
-            # посылаем AudioStop → HA прекращает ждать STT
-            await self.event_to_server(AudioStop().event())
-            await self.event_to_server(PauseSatellite().event())
+            _LOGGER.error("Watchdog: %s s silence → restart satellite core", TIMEOUT)
+            self.state = State.RESTARTING     # перезапускает mic/snd/wake
             self._last_activity = time.monotonic()
 
-            # 2) если подряд N раз таймаут → перезапускаем сервис-таски
-            if self._wd_misses >= SOFT_RESET:
-                _LOGGER.error("Watchdog: %s consecutive timeouts → restart services",
-                            SOFT_RESET)
-                self.state = State.RESTARTING                 # задействует _restart()
-                self._wd_misses = 0
 
     # -------------------------------------------------------------------------
 
@@ -901,6 +878,8 @@ class SatelliteBase:
             self.settings.snd.awake_wav,
             mute_microphone=self.settings.mic.mute_during_awake_wav,
         )
+        self.refractory_timestamp[None] = time.monotonic() + 1.0  # 1 с блокировка
+
 
     async def trigger_played(self) -> None:
         """Called when audio stopped playing"""
@@ -1286,10 +1265,7 @@ class WakeStreamingSatellite(SatelliteBase):
         is_pause_satellite = False
         is_transcript = False
         is_error = False
-
-        if event.type in ("Detection", "VoiceStarted", "VoiceStopped", "AudioChunk", "AudioStart", "AudioStop"):
-            self._last_activity = time.monotonic()
-
+        
         if RunSatellite.is_type(event.type):
             is_run_satellite = True
             self._is_paused = False
@@ -1356,7 +1332,8 @@ class WakeStreamingSatellite(SatelliteBase):
     async def event_from_mic(
         self, event: Event, audio_bytes: Optional[bytes] = None
     ) -> None:
-        
+        if AudioChunk.is_type(event.type):
+            self._last_activity = time.monotonic()
         # -------------------------------------------------------------
         # FOLLOW-UP mini-VAD (использует уже полученный AudioChunk)
         # -------------------------------------------------------------
