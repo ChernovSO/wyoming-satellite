@@ -242,6 +242,9 @@ class SatelliteBase:
                 continue
 
             _LOGGER.error("Watchdog: %s s silence → restart satellite core", TIMEOUT)
+            self.is_streaming = False
+            self.follow_up_active = False
+
             self.state = State.RESTARTING     # перезапускает mic/snd/wake
             self._last_activity = time.monotonic()
 
@@ -1271,13 +1274,18 @@ class WakeStreamingSatellite(SatelliteBase):
             self._is_paused = False
 
         elif PauseSatellite.is_type(event.type):
+            self.is_streaming = False
+            self.follow_up_active = False
+            self._follow_buffer = None
             is_pause_satellite = True
         elif Transcript.is_type(event.type):
+            self.is_streaming = False 
             self.follow_up_active = False            # окно закрыто
             self._follow_vad = None
             self._follow_buffer = None
             is_transcript = True
         elif Error.is_type(event.type):
+            self.is_streaming = False 
             self.follow_up_active = False            # окно закрыто
             self._follow_buffer = None
             is_error = True
@@ -1332,6 +1340,13 @@ class WakeStreamingSatellite(SatelliteBase):
     async def event_from_mic(
         self, event: Event, audio_bytes: Optional[bytes] = None
     ) -> None:
+        if (
+            not self.is_running          # спутник выключается
+            or self.server_id is None    # нет соединения
+            or not self.is_streaming     # пайп-лайн не запущен
+        ):
+            return   
+                
         if AudioChunk.is_type(event.type):
             self._last_activity = time.monotonic()
         # -------------------------------------------------------------
