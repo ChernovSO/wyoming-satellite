@@ -1263,6 +1263,13 @@ class WakeStreamingSatellite(SatelliteBase):
         self._wake_info_ready = asyncio.Event()
 
     async def event_from_server(self, event: Event) -> None:
+        # mark activity для watchdog
+        if event.type in (
+                "Detection", "VoiceStarted", "VoiceStopped",
+                "AudioStart", "AudioStop"
+        ):
+            self._last_activity = time.monotonic()
+
         # Only check event types once
         is_run_satellite = False
         is_pause_satellite = False
@@ -1340,12 +1347,8 @@ class WakeStreamingSatellite(SatelliteBase):
     async def event_from_mic(
         self, event: Event, audio_bytes: Optional[bytes] = None
     ) -> None:
-        if (
-            not self.is_running          # спутник выключается
-            or self.server_id is None    # нет соединения
-            or not self.is_streaming     # пайп-лайн не запущен
-        ):
-            return   
+        if not self.is_running or self.server_id is None:
+            return
                 
         if AudioChunk.is_type(event.type):
             self._last_activity = time.monotonic()
