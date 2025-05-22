@@ -113,6 +113,9 @@ class SatelliteBase:
         self._last_activity = time.monotonic()
         self._watchdog_task = asyncio.create_task(self._watchdog_loop(), name="watchdog")
 
+        self._tts_playing = False
+        self._stream_started = None        # type: Optional[float]
+        
         self.follow_up_active = False          # окно открыто?
         self._follow_up_deadline = 0.0         # time.monotonic() конца окна
         self._follow_vad: Optional[SileroVad] = None
@@ -235,9 +238,24 @@ class SatelliteBase:
             _LOGGER.exception("Unexpected error in ping server task")
     
     async def _watchdog_loop(self) -> None:
+        EMPTY_STREAM = 10
         TIMEOUT = 30          # сек без активности → рестарт
         while self.is_running:
-            await asyncio.sleep(5)
+            await asyncio.sleep(1)
+            
+            if (
+                self.is_streaming
+                and self._stream_started is not None
+                and (time.monotonic() - self._stream_started) > EMPTY_STREAM
+            ):
+                _LOGGER.warning("Empty stream %ss – cancel pipeline", EMPTY_STREAM)
+                self.is_streaming = False
+                self._stream_started = None
+                await self.event_to_server(AudioStop().event())
+                await self.event_to_server(PauseSatellite().event())
+                await self.trigger_streaming_stop()
+                continue         # идём к следующему циклу watchdog
+
             if (time.monotonic() - self._last_activity) <= TIMEOUT:
                 continue
 
@@ -919,11 +937,11 @@ class SatelliteBase:
         await run_event_command(self.settings.event.synthesize, synthesize.text)
 
     async def trigger_tts_start(self) -> None:
-        """Called when text-to-speech audio starts."""
+        self._tts_playing = True
         await run_event_command(self.settings.event.tts_start)
 
     async def trigger_tts_stop(self) -> None:
-        """Called when text-to-speech audio stops."""
+        self._tts_playing = False
         await run_event_command(self.settings.event.tts_stop)
 
     async def trigger_error(self, error: Error) -> None:
@@ -1029,6 +1047,8 @@ class AlwaysStreamingSatellite(SatelliteBase):
 
         if RunSatellite.is_type(event.type):
             self.is_streaming = True
+            self._stream_started = time.monotonic()
+
             _LOGGER.info("Streaming audio")
             await self._send_run_pipeline()
             await self.trigger_streaming_start()
@@ -1188,6 +1208,8 @@ class VadStreamingSatellite(SatelliteBase):
 
             # Speech detected
             self.is_streaming = True
+            self._stream_started = time.monotonic()
+
             _LOGGER.info("Streaming audio")
             await self._send_run_pipeline()
             await self.trigger_streaming_start()
@@ -1279,7 +1301,8 @@ class WakeStreamingSatellite(SatelliteBase):
         if RunSatellite.is_type(event.type):
             is_run_satellite = True
             self._is_paused = False
-
+        elif VoiceStarted.is_type(event.type):
+            self._stream_started = None
         elif PauseSatellite.is_type(event.type):
             self.is_streaming = False
             self.follow_up_active = False
@@ -1349,9 +1372,15 @@ class WakeStreamingSatellite(SatelliteBase):
     ) -> None:
         if not self.is_running or self.server_id is None:
             return
-                
-        if AudioChunk.is_type(event.type):
+        
+        if self.is_streaming and AudioChunk.is_type(event.type):
             self._last_activity = time.monotonic()
+
+        # ── если сейчас проигрывается TTS ─────────────────────
+        #     → отдаём фрейм только wake-сервису
+        if self._tts_playing:
+            await self.event_to_wake(event)
+            return                    # на сервер не шлём
         # -------------------------------------------------------------
         # FOLLOW-UP mini-VAD (использует уже полученный AudioChunk)
         # -------------------------------------------------------------
@@ -1379,6 +1408,7 @@ class WakeStreamingSatellite(SatelliteBase):
                 # включаем normal streaming
                 if hasattr(self, "is_streaming"):
                     self.is_streaming = True
+                    self._stream_started = time.monotonic()
                 try:
                     await self.trigger_streaming_start()
                 except AttributeError:
@@ -1464,6 +1494,7 @@ class WakeStreamingSatellite(SatelliteBase):
             _LOGGER.info(detection)
 
             self.is_streaming = True
+            self._stream_started = time.monotonic()
             _LOGGER.info("Streaming audio")
 
             if self.settings.wake.refractory_seconds is not None:
