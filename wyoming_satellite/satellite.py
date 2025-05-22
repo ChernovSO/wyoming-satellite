@@ -403,6 +403,22 @@ class SatelliteBase:
         )
         await self.forward_event(run_pipeline)
 
+    async def _start_new_pipeline(self, pipeline_name: Optional[str] = None):
+        # 1) если уже стримим – мягко закрываем
+        if self.is_streaming:
+            await self.event_to_server(AudioStop().event())
+            await self.event_to_server(PauseSatellite().event())
+            await self.trigger_streaming_stop()   # LED reset
+            # 50 мс пауза, чтобы HA успел обработать
+            await asyncio.sleep(0.05)
+
+        # 2) открываем новый
+        self.is_streaming = True
+        self._stream_started = time.monotonic()
+        await self._send_run_pipeline(pipeline_name=pipeline_name)
+        await self.trigger_streaming_start()
+
+
     async def _restart(self) -> None:
         """Disconnects from services and restarts loop."""
         self.state = State.RESTARTING
@@ -1421,7 +1437,7 @@ class WakeStreamingSatellite(SatelliteBase):
                 except AttributeError:
                     pass
                 # RunPipeline (ASR→TTS)
-                await self._send_run_pipeline()
+                await self._start_new_pipeline()
                 # отправляем pre-speech буфер
                 if self._follow_buffer and self._follow_buffer.getvalue():
                     await self.event_to_server(
@@ -1526,7 +1542,7 @@ class WakeStreamingSatellite(SatelliteBase):
                         pipeline_name = wake_name.pipeline
                         break
 
-            await self._send_run_pipeline(pipeline_name=pipeline_name)
+            await self._start_new_pipeline(pipeline_name=pipeline_name)
             await self.forward_event(event)  # forward to event service
             await self.trigger_detection(Detection.from_event(event))
             await self.trigger_streaming_start()
