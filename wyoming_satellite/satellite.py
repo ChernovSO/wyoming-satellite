@@ -242,7 +242,7 @@ class SatelliteBase:
         TIMEOUT = 30          # сек без активности → рестарт
         while self.is_running:
             await asyncio.sleep(1)
-            
+
             if (
                 self.is_streaming
                 and self._stream_started is not None
@@ -394,6 +394,13 @@ class SatelliteBase:
         ).event()
         _LOGGER.debug(run_pipeline)
         await self.event_to_server(run_pipeline)
+        await self.event_to_server(
+            AudioStart(
+                rate=self.settings.mic.rate,
+                width=self.settings.mic.width,
+                channels=self.settings.mic.channels,
+            ).event()
+        )
         await self.forward_event(run_pipeline)
 
     async def _restart(self) -> None:
