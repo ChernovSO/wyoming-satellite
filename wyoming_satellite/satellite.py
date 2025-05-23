@@ -115,7 +115,8 @@ class SatelliteBase:
 
         self._tts_playing = False
         self._stream_started = None        # type: Optional[float]
-        
+        self._sent_audio_start = False
+
         self.follow_up_active = False          # окно открыто?
         self._follow_up_deadline = 0.0         # time.monotonic() конца окна
         self._follow_vad: Optional[SileroVad] = None
@@ -238,7 +239,7 @@ class SatelliteBase:
             _LOGGER.exception("Unexpected error in ping server task")
     
     async def _watchdog_loop(self) -> None:
-        EMPTY_STREAM = 10
+        EMPTY_STREAM = 3
         TIMEOUT = 30          # сек без активности → рестарт
         while self.is_running:
             await asyncio.sleep(1)
@@ -254,6 +255,7 @@ class SatelliteBase:
                 await self.event_to_server(AudioStop().event())
                 await self.event_to_server(PauseSatellite().event())
                 await self.trigger_streaming_stop()
+                self._sent_audio_start = False
                 continue         # идём к следующему циклу watchdog
 
             if (time.monotonic() - self._last_activity) <= TIMEOUT:
@@ -409,6 +411,7 @@ class SatelliteBase:
             await self.event_to_server(AudioStop().event())
             await self.event_to_server(PauseSatellite().event())
             await self.trigger_streaming_stop()   # LED reset
+            self._sent_audio_start = False
             # 50 мс пауза, чтобы HA успел обработать
             await asyncio.sleep(0.05)
 
@@ -1327,22 +1330,25 @@ class WakeStreamingSatellite(SatelliteBase):
         elif VoiceStarted.is_type(event.type):
             self._stream_started = None
         elif PauseSatellite.is_type(event.type):
+            self._sent_audio_start = False
             self.is_streaming = False
             self.follow_up_active = False
             self._follow_buffer = None
             is_pause_satellite = True
         elif Transcript.is_type(event.type):
+            self._sent_audio_start = False
             self.is_streaming = False 
             self.follow_up_active = False            # окно закрыто
             self._follow_vad = None
             self._follow_buffer = None
             is_transcript = True
         elif Error.is_type(event.type):
+            self._sent_audio_start = False
             self.is_streaming = False 
             self.follow_up_active = False            # окно закрыто
             self._follow_buffer = None
             is_error = True
-
+            
         if is_transcript or is_pause_satellite:
             # Stop streaming before event_from_server is called because it will
             # play the "done" WAV.
@@ -1479,6 +1485,15 @@ class WakeStreamingSatellite(SatelliteBase):
                 self.stt_audio_writer.write(audio_bytes)
 
         if self.is_streaming:
+            if not self._sent_audio_start:
+                await self.event_to_server(
+                    AudioStart(
+                        rate=self.settings.mic.rate,
+                        width=self.settings.mic.width,
+                        channels=self.settings.mic.channels,
+                    ).event()
+                )
+                self._sent_audio_start = True 
             # Forward to server
             await self.event_to_server(event)
         else:
