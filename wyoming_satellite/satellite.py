@@ -459,7 +459,7 @@ class SatelliteBase:
             self._event_task = asyncio.create_task(
                 self._event_task_proc(), name="event"
             )
-self._waiting_pipeline = asyncio.Event()
+        
         _LOGGER.info("Connected to services")
 
     async def _disconnect_from_services(self) -> None:
