@@ -112,7 +112,7 @@ class SatelliteBase:
 
         self._last_activity = time.monotonic()
         self._watchdog_task = asyncio.create_task(self._watchdog_loop(), name="watchdog")
-
+        self._waiting_pipeline = asyncio.Event()
         self._tts_playing = False
         self._stream_started = None        # type: Optional[float]
         self._sent_audio_start = False
@@ -414,7 +414,10 @@ class SatelliteBase:
         await self.event_to_server(PauseSatellite().event())
         await self.trigger_streaming_stop()
 
-        await asyncio.sleep(0.05)
+        try:
+            await asyncio.wait_for(self._waiting_pipeline.wait(), timeout=3.0)
+        except asyncio.TimeoutError:
+            _LOGGER.warning("Timeout waiting for RunPipeline from server")
 
     async def _restart(self) -> None:
         """Disconnects from services and restarts loop."""
@@ -456,7 +459,7 @@ class SatelliteBase:
             self._event_task = asyncio.create_task(
                 self._event_task_proc(), name="event"
             )
-
+self._waiting_pipeline = asyncio.Event()
         _LOGGER.info("Connected to services")
 
     async def _disconnect_from_services(self) -> None:
@@ -986,7 +989,7 @@ class SatelliteBase:
         for _ in range(self.settings.timer.finished_wav_plays):
             await self._play_wav(
                 self.settings.timer.finished_wav,
-                mute_microphone=self.settings.mic.mute_during_awake_wav,
+                mute_microphone=self.settings.mic.mute_during_awaself._waiting_pipeline = asyncio.Event()ke_wav,
             )
             await asyncio.sleep(self.settings.timer.finished_wav_delay)
 
@@ -1340,6 +1343,10 @@ class WakeStreamingSatellite(SatelliteBase):
             self.follow_up_active = False            # окно закрыто
             self._follow_buffer = None
             is_error = True
+        elif RunPipeline.is_type(event.type):
+            self._pipeline_active = True
+            if hasattr(self, "_waiting_pipeline"):
+                self._waiting_pipeline.set()
 
         if is_transcript or is_pause_satellite:
             # Stop streaming before event_from_server is called because it will
@@ -1437,6 +1444,7 @@ class WakeStreamingSatellite(SatelliteBase):
                 # RunPipeline (ASR→TTS)
                 await self._start_new_pipeline()
                 # отправляем pre-speech буфер
+                self._pipeline_active = True 
                 if self._follow_buffer and self._follow_buffer.getvalue():
                     await self.event_to_server(
                         AudioChunk(
