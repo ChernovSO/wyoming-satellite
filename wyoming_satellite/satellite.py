@@ -409,15 +409,17 @@ class SatelliteBase:
         self.is_streaming = False
         self._stream_started = None
         self._sent_audio_start = False
-        self._pipeline_active = False  # <----- обязательно
+        self._pipeline_active = False
         await self.event_to_server(AudioStop().event())
         await self.event_to_server(PauseSatellite().event())
         await self.trigger_streaming_stop()
 
-        try:
-            await asyncio.wait_for(self._waiting_pipeline.wait(), timeout=3.0)
-        except asyncio.TimeoutError:
-            _LOGGER.warning("Timeout waiting for RunPipeline from server")
+        if self.follow_up_active:
+            try:
+                self._waiting_pipeline.clear()
+                await asyncio.wait_for(self._waiting_pipeline.wait(), timeout=3.0)
+            except asyncio.TimeoutError:
+                _LOGGER.warning("Timeout waiting for RunPipeline from server")
 
     async def _restart(self) -> None:
         """Disconnects from services and restarts loop."""
