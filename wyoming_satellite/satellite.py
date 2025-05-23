@@ -116,7 +116,7 @@ class SatelliteBase:
         self._tts_playing = False
         self._stream_started = None        # type: Optional[float]
         self._sent_audio_start = False
-
+        self._pipeline_active = False
         self.follow_up_active = False          # окно открыто?
         self._follow_up_deadline = 0.0         # time.monotonic() конца окна
         self._follow_vad: Optional[SileroVad] = None
@@ -400,19 +400,20 @@ class SatelliteBase:
         self.is_streaming    = True
         self._stream_started = time.monotonic()
         self._sent_audio_start = False      # на случай внешнего вызова
+        self._pipeline_active = False
         await self._send_run_pipeline(pipeline_name=pipeline_name)
         await self.trigger_streaming_start()
 
 
     async def _close_current_pipeline(self) -> None:
-        """Мягко закрывает текущий стрим, сбрасывает все флаги."""
-        self.is_streaming      = False
-        self._stream_started   = None
-        self._sent_audio_start = False      # <-- САМЫЙ ГЛАВНЫЙ СБРОС
+        self.is_streaming = False
+        self._stream_started = None
+        self._sent_audio_start = False
+        self._pipeline_active = False  # <----- обязательно
         await self.event_to_server(AudioStop().event())
         await self.event_to_server(PauseSatellite().event())
         await self.trigger_streaming_stop()
-        # 50 мс – дать НА обработать
+
         await asyncio.sleep(0.05)
 
     async def _restart(self) -> None:
@@ -1319,12 +1320,14 @@ class WakeStreamingSatellite(SatelliteBase):
             self._stream_started = None
         elif PauseSatellite.is_type(event.type):
             self._sent_audio_start = False
+            self._pipeline_active = False
             self.is_streaming = False
             self.follow_up_active = False
             self._follow_buffer = None
             is_pause_satellite = True
         elif Transcript.is_type(event.type):
             self._sent_audio_start = False
+            self._pipeline_active = False
             self.is_streaming = False 
             self.follow_up_active = False            # окно закрыто
             self._follow_vad = None
@@ -1332,6 +1335,7 @@ class WakeStreamingSatellite(SatelliteBase):
             is_transcript = True
         elif Error.is_type(event.type):
             self._sent_audio_start = False
+            self._pipeline_active = False
             self.is_streaming = False 
             self.follow_up_active = False            # окно закрыто
             self._follow_buffer = None
