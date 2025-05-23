@@ -239,7 +239,7 @@ class SatelliteBase:
             _LOGGER.exception("Unexpected error in ping server task")
     
     async def _watchdog_loop(self) -> None:
-        EMPTY_STREAM = 10        # сек
+        EMPTY_STREAM = 3       # сек
         TIMEOUT      = 30
         while self.is_running:
             await asyncio.sleep(1)
@@ -788,24 +788,7 @@ class SatelliteBase:
                     to_client_task.cancel()
                     to_client_task = None
 
-                if from_client_task is not None:    async def _watchdog_loop(self) -> None:
-        EMPTY_STREAM = 10        # сек
-        TIMEOUT      = 30
-        while self.is_running:
-            await asyncio.sleep(1)
-
-            # --- “пустой” поток -------------------------------------------------
-            if self.is_streaming and self._stream_started and \
-            (time.monotonic() - self._stream_started) > EMPTY_STREAM:
-                _LOGGER.warning("Empty stream %ss – cancel pipeline", EMPTY_STREAM)
-                await self._close_current_pipeline()
-                continue
-
-            # --- глобальный таймаут --------------------------------------------
-            if (time.monotonic() - self._last_activity) > TIMEOUT:
-                _LOGGER.error("Watchdog: %s s silence → restart core", TIMEOUT)
-                self.state = State.RESTARTING
-                self._last_activity = time.monotonic()
+                if from_client_task is not None:
                     from_client_task.cancel()
                     from_client_task = None
             except Exception:
@@ -1321,6 +1304,7 @@ class WakeStreamingSatellite(SatelliteBase):
         self._wake_info_ready = asyncio.Event()
 
     async def event_from_server(self, event: Event) -> None:
+
 
         # Only check event types once
         is_run_satellite = False
