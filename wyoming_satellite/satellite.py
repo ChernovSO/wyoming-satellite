@@ -239,37 +239,25 @@ class SatelliteBase:
             _LOGGER.exception("Unexpected error in ping server task")
     
     async def _watchdog_loop(self) -> None:
-        EMPTY_STREAM = 3
-        TIMEOUT = 30          # сек без активности → рестарт
+        EMPTY_STREAM = 10        # сек
+        TIMEOUT      = 30
         while self.is_running:
             await asyncio.sleep(1)
 
-            if (
-                self.is_streaming
-                and self._stream_started is not None
-                and (time.monotonic() - self._stream_started) > EMPTY_STREAM
-            ):
+            # --- “пустой” поток -------------------------------------------------
+            if self.is_streaming and self._stream_started and \
+            (time.monotonic() - self._stream_started) > EMPTY_STREAM:
                 _LOGGER.warning("Empty stream %ss – cancel pipeline", EMPTY_STREAM)
-                self.is_streaming = False
-                self._stream_started = None
-                await self.event_to_server(AudioStop().event())
-                await self.event_to_server(PauseSatellite().event())
-                await self.trigger_streaming_stop()
-                self._sent_audio_start = False
-                continue         # идём к следующему циклу watchdog
-
-            if (time.monotonic() - self._last_activity) <= TIMEOUT:
+                await self._close_current_pipeline()
                 continue
 
-            _LOGGER.error("Watchdog: %s s silence → restart satellite core", TIMEOUT)
-            self.is_streaming = False
-            self.follow_up_active = False
+            # --- глобальный таймаут --------------------------------------------
+            if (time.monotonic() - self._last_activity) > TIMEOUT:
+                _LOGGER.error("Watchdog: %s s silence → restart core", TIMEOUT)
+                self.state = State.RESTARTING
+                self._last_activity = time.monotonic()
 
-            self.state = State.RESTARTING     # перезапускает mic/snd/wake
-            self._last_activity = time.monotonic()
-
-
-    # -------------------------------------------------------------------------
+    # ------------------------------------------------------------------------
 
     async def _start(self) -> None:
         """Connect to services."""
@@ -405,22 +393,27 @@ class SatelliteBase:
         )
         await self.forward_event(run_pipeline)
 
-    async def _start_new_pipeline(self, pipeline_name: Optional[str] = None):
-        # 1) если уже стримим – мягко закрываем
+    async def _start_new_pipeline(self, pipeline_name: Optional[str] = None) -> None:
         if self.is_streaming:
-            await self.event_to_server(AudioStop().event())
-            await self.event_to_server(PauseSatellite().event())
-            await self.trigger_streaming_stop()   # LED reset
-            self._sent_audio_start = False
-            # 50 мс пауза, чтобы HA успел обработать
-            await asyncio.sleep(0.05)
+            await self._close_current_pipeline()
 
-        # 2) открываем новый
-        self.is_streaming = True
+        self.is_streaming    = True
         self._stream_started = time.monotonic()
+        self._sent_audio_start = False      # на случай внешнего вызова
         await self._send_run_pipeline(pipeline_name=pipeline_name)
         await self.trigger_streaming_start()
 
+
+    async def _close_current_pipeline(self) -> None:
+        """Мягко закрывает текущий стрим, сбрасывает все флаги."""
+        self.is_streaming      = False
+        self._stream_started   = None
+        self._sent_audio_start = False      # <-- САМЫЙ ГЛАВНЫЙ СБРОС
+        await self.event_to_server(AudioStop().event())
+        await self.event_to_server(PauseSatellite().event())
+        await self.trigger_streaming_stop()
+        # 50 мс – дать НА обработать
+        await asyncio.sleep(0.05)
 
     async def _restart(self) -> None:
         """Disconnects from services and restarts loop."""
@@ -795,7 +788,24 @@ class SatelliteBase:
                     to_client_task.cancel()
                     to_client_task = None
 
-                if from_client_task is not None:
+                if from_client_task is not None:    async def _watchdog_loop(self) -> None:
+        EMPTY_STREAM = 10        # сек
+        TIMEOUT      = 30
+        while self.is_running:
+            await asyncio.sleep(1)
+
+            # --- “пустой” поток -------------------------------------------------
+            if self.is_streaming and self._stream_started and \
+            (time.monotonic() - self._stream_started) > EMPTY_STREAM:
+                _LOGGER.warning("Empty stream %ss – cancel pipeline", EMPTY_STREAM)
+                await self._close_current_pipeline()
+                continue
+
+            # --- глобальный таймаут --------------------------------------------
+            if (time.monotonic() - self._last_activity) > TIMEOUT:
+                _LOGGER.error("Watchdog: %s s silence → restart core", TIMEOUT)
+                self.state = State.RESTARTING
+                self._last_activity = time.monotonic()
                     from_client_task.cancel()
                     from_client_task = None
             except Exception:
@@ -1311,12 +1321,6 @@ class WakeStreamingSatellite(SatelliteBase):
         self._wake_info_ready = asyncio.Event()
 
     async def event_from_server(self, event: Event) -> None:
-        # mark activity для watchdog
-        if event.type in (
-                "Detection", "VoiceStarted", "VoiceStopped",
-                "AudioStart", "AudioStop"
-        ):
-            self._last_activity = time.monotonic()
 
         # Only check event types once
         is_run_satellite = False
@@ -1348,7 +1352,7 @@ class WakeStreamingSatellite(SatelliteBase):
             self.follow_up_active = False            # окно закрыто
             self._follow_buffer = None
             is_error = True
-            
+
         if is_transcript or is_pause_satellite:
             # Stop streaming before event_from_server is called because it will
             # play the "done" WAV.
