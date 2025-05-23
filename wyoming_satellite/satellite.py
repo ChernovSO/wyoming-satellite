@@ -989,7 +989,7 @@ class SatelliteBase:
         for _ in range(self.settings.timer.finished_wav_plays):
             await self._play_wav(
                 self.settings.timer.finished_wav,
-                mute_microphone=self.settings.mic.mute_during_awaself._waiting_pipeline = asyncio.Event()ke_wav,
+                mute_microphone=self.settings.mic.mute_during_awake_wav,
             )
             await asyncio.sleep(self.settings.timer.finished_wav_delay)
 
