@@ -1287,6 +1287,8 @@ class WakeStreamingSatellite(SatelliteBase):
             is_run_satellite = True
             self._is_paused = False
             if not self.is_streaming:
+                self.is_streaming = True
+                self._stream_started = time.monotonic()
                 await self.trigger_streaming_start()
         elif VoiceStarted.is_type(event.type):
             self._stream_started = None
@@ -1500,8 +1502,8 @@ class WakeStreamingSatellite(SatelliteBase):
 
             _LOGGER.info(detection)
 
-            self.is_streaming = True
-            self._stream_started = time.monotonic()
+            # self.is_streaming = True
+            # self._stream_started = time.monotonic()
             _LOGGER.info("Streaming audio")
 
             if self.settings.wake.refractory_seconds is not None:
@@ -1529,7 +1531,7 @@ class WakeStreamingSatellite(SatelliteBase):
             await self._start_new_pipeline(pipeline_name=pipeline_name)
             await self.forward_event(event)  # forward to event service
             await self.trigger_detection(Detection.from_event(event))
-            await self.trigger_streaming_start()
+            # await self.trigger_streaming_start()
 
     async def update_info(self, info: Info) -> None:
         self._wake_info = None
