@@ -368,8 +368,8 @@ class SatelliteBase:
         await self.forward_event(run_pipeline)
 
     async def _start_new_pipeline(self, pipeline_name: Optional[str] = None) -> None:
-        if self.is_streaming:
-            await self._close_current_pipeline()
+        # if self.is_streaming:
+        #     await self._close_current_pipeline()
         self._stream_started = None
         self._sent_audio_start = False      # на случай внешнего вызова
         self._pipeline_active = False
@@ -895,7 +895,7 @@ class SatelliteBase:
             self.settings.snd.awake_wav,
             mute_microphone=self.settings.mic.mute_during_awake_wav,
         )
-        self.refractory_timestamp[None] = time.monotonic() + 1.0  # 1 с блокировка
+        # self.refractory_timestamp[None] = time.monotonic() + 1.0  # 1 с блокировка
 
 
     async def trigger_played(self) -> None:
