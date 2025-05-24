@@ -111,7 +111,7 @@ class SatelliteBase:
             )
 
         self._last_activity = time.monotonic()
-        self._watchdog_task = asyncio.create_task(self._watchdog_loop(), name="watchdog")
+        # self._watchdog_task = asyncio.create_task(self._watchdog_loop(), name="watchdog")
         self._waiting_pipeline = asyncio.Event()
         self._tts_playing = False
         self._stream_started = None        # type: Optional[float]
@@ -238,24 +238,24 @@ class SatelliteBase:
         except Exception:
             _LOGGER.exception("Unexpected error in ping server task")
     
-    async def _watchdog_loop(self) -> None:
-        EMPTY_STREAM = 3       # сек
-        TIMEOUT      = 30
-        while self.is_running:
-            await asyncio.sleep(1)
+    # async def _watchdog_loop(self) -> None:
+    #     EMPTY_STREAM = 3       # сек
+    #     TIMEOUT      = 30
+    #     while self.is_running:
+    #         await asyncio.sleep(1)
 
-            # --- “пустой” поток -------------------------------------------------
-            if self.is_streaming and self._stream_started and \
-            (time.monotonic() - self._stream_started) > EMPTY_STREAM:
-                _LOGGER.warning("Empty stream %ss – cancel pipeline", EMPTY_STREAM)
-                await self._close_current_pipeline()
-                continue
+    #         # # --- “пустой” поток -------------------------------------------------
+    #         # if self.is_streaming and self._stream_started and \
+    #         # (time.monotonic() - self._stream_started) > EMPTY_STREAM:
+    #         #     _LOGGER.warning("Empty stream %ss – cancel pipeline", EMPTY_STREAM)
+    #         #     await self._close_current_pipeline()
+    #         #     continue
 
-            # --- глобальный таймаут --------------------------------------------
-            if (time.monotonic() - self._last_activity) > TIMEOUT:
-                _LOGGER.error("Watchdog: %s s silence → restart core", TIMEOUT)
-                self.state = State.RESTARTING
-                self._last_activity = time.monotonic()
+    #         # --- глобальный таймаут --------------------------------------------
+    #         if (time.monotonic() - self._last_activity) > TIMEOUT:
+    #             _LOGGER.error("Watchdog: %s s silence → restart core", TIMEOUT)
+    #             self.state = State.RESTARTING
+    #             self._last_activity = time.monotonic()
 
     # ------------------------------------------------------------------------
 
