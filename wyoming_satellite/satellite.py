@@ -183,7 +183,7 @@ class SatelliteBase:
         self._writer = None
         self._disable_ping()
 
-        _LOGGER.info("Server disconnected")
+        _LOGGER.debug("Server disconnected")
         await self.trigger_server_disonnected()
 
     async def event_to_server(self, event: Event) -> None:
@@ -237,27 +237,8 @@ class SatelliteBase:
             pass
         except Exception:
             _LOGGER.exception("Unexpected error in ping server task")
-    
-    # async def _watchdog_loop(self) -> None:
-    #     EMPTY_STREAM = 3       # сек
-    #     TIMEOUT      = 30
-    #     while self.is_running:
-    #         await asyncio.sleep(1)
 
-    #         # # --- “пустой” поток -------------------------------------------------
-    #         # if self.is_streaming and self._stream_started and \
-    #         # (time.monotonic() - self._stream_started) > EMPTY_STREAM:
-    #         #     _LOGGER.warning("Empty stream %ss – cancel pipeline", EMPTY_STREAM)
-    #         #     await self._close_current_pipeline()
-    #         #     continue
-
-    #         # --- глобальный таймаут --------------------------------------------
-    #         if (time.monotonic() - self._last_activity) > TIMEOUT:
-    #             _LOGGER.error("Watchdog: %s s silence → restart core", TIMEOUT)
-    #             self.state = State.RESTARTING
-    #             self._last_activity = time.monotonic()
-
-    # ------------------------------------------------------------------------
+    # -------------------------------------------------------------------------
 
     async def _start(self) -> None:
         """Connect to services."""
@@ -384,25 +365,16 @@ class SatelliteBase:
         ).event()
         _LOGGER.debug(run_pipeline)
         await self.event_to_server(run_pipeline)
-        await self.event_to_server(
-            AudioStart(
-                rate=self.settings.mic.rate,
-                width=self.settings.mic.width,
-                channels=self.settings.mic.channels,
-            ).event()
-        )
         await self.forward_event(run_pipeline)
 
     async def _start_new_pipeline(self, pipeline_name: Optional[str] = None) -> None:
         if self.is_streaming:
             await self._close_current_pipeline()
-
-        self.is_streaming    = True
-        self._stream_started = time.monotonic()
+        self._stream_started = None
         self._sent_audio_start = False      # на случай внешнего вызова
         self._pipeline_active = False
         await self._send_run_pipeline(pipeline_name=pipeline_name)
-        await self.trigger_streaming_start()
+        # await self.trigger_streaming_start()
 
 
     async def _close_current_pipeline(self) -> None:
@@ -411,7 +383,6 @@ class SatelliteBase:
         self._sent_audio_start = False
         self._pipeline_active = False
         await self.event_to_server(AudioStop().event())
-        await self.event_to_server(PauseSatellite().event())
         await self.trigger_streaming_stop()
 
         if self.follow_up_active:
@@ -461,7 +432,7 @@ class SatelliteBase:
             self._event_task = asyncio.create_task(
                 self._event_task_proc(), name="event"
             )
-        
+
         _LOGGER.info("Connected to services")
 
     async def _disconnect_from_services(self) -> None:
@@ -486,7 +457,7 @@ class SatelliteBase:
             self._event_task.cancel()
             self._event_task = None
 
-        _LOGGER.info("Disconnected from services")
+        _LOGGER.debug("Disconnected from services")
 
     # -------------------------------------------------------------------------
     # Microphone
@@ -545,7 +516,7 @@ class SatelliteBase:
                     assert mic_client is not None
                     await mic_client.connect()
                     self._mic_client = mic_client
-                    _LOGGER.info("Connected to mic service")
+                    _LOGGER.debug("Connected to mic service")
 
                 event = await mic_client.read_event()
                 if event is None:
@@ -725,7 +696,7 @@ class SatelliteBase:
                     seconds_to_mute = wav_file.getnframes() / wav_file.getframerate()
 
                 seconds_to_mute += self.settings.mic.seconds_to_mute_after_awake_wav
-                _LOGGER.info("Muting microphone for %s second(s)", seconds_to_mute)
+                _LOGGER.debug("Muting microphone for %s second(s)", seconds_to_mute)
                 self.microphone_muted = True
                 self._unmute_microphone_task = asyncio.create_task(
                     self._unmute_microphone_after(seconds_to_mute)
@@ -745,7 +716,7 @@ class SatelliteBase:
     async def _unmute_microphone_after(self, seconds: float) -> None:
         await asyncio.sleep(seconds)
         self.microphone_muted = False
-        _LOGGER.info("Unmuted microphone")
+        _LOGGER.debug("Unmuted microphone")
 
     # -------------------------------------------------------------------------
     # Wake
@@ -809,7 +780,7 @@ class SatelliteBase:
                     wake_client = self._make_wake_client()
                     assert wake_client is not None
                     await wake_client.connect()
-                    _LOGGER.info("Connected to wake service")
+                    _LOGGER.debug("Connected to wake service")
 
                     # Reset
                     from_client_task = None
@@ -1072,8 +1043,6 @@ class AlwaysStreamingSatellite(SatelliteBase):
 
         if RunSatellite.is_type(event.type):
             self.is_streaming = True
-            self._stream_started = time.monotonic()
-
             _LOGGER.info("Streaming audio")
             await self._send_run_pipeline()
             await self.trigger_streaming_start()
@@ -1233,8 +1202,6 @@ class VadStreamingSatellite(SatelliteBase):
 
             # Speech detected
             self.is_streaming = True
-            self._stream_started = time.monotonic()
-
             _LOGGER.info("Streaming audio")
             await self._send_run_pipeline()
             await self.trigger_streaming_start()
@@ -1310,17 +1277,17 @@ class WakeStreamingSatellite(SatelliteBase):
         self._wake_info_ready = asyncio.Event()
 
     async def event_from_server(self, event: Event) -> None:
-
-
         # Only check event types once
         is_run_satellite = False
         is_pause_satellite = False
         is_transcript = False
         is_error = False
-        
+
         if RunSatellite.is_type(event.type):
             is_run_satellite = True
             self._is_paused = False
+            if not self.is_streaming:
+                await self.trigger_streaming_start()
         elif VoiceStarted.is_type(event.type):
             self._stream_started = None
         elif PauseSatellite.is_type(event.type):
