@@ -1456,7 +1456,7 @@ class WakeStreamingSatellite(SatelliteBase):
             if self.stt_audio_writer is not None:
                 self.stt_audio_writer.write(audio_bytes)
 
-        if self.is_streaming and self._pipeline_active:
+        if self.is_streaming:
             await self.event_to_server(event)
         else:
             # Forward to wake word service
