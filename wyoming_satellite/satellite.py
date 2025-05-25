@@ -877,7 +877,10 @@ class SatelliteBase:
     async def trigger_streaming_start(self) -> None:
         """Called when audio streaming starts."""
         await run_event_command(self.settings.event.streaming_start)
-        await self.forward_event(StreamingStarted().event())
+        # await self.forward_event(StreamingStarted().event())
+        evt = StreamingStarted().event()
+        await self.event_to_server(evt)
+        await self.forward_event(evt)
 
     async def trigger_streaming_stop(self) -> None:
         """Called when audio streaming stops."""
@@ -1454,16 +1457,15 @@ class WakeStreamingSatellite(SatelliteBase):
                 self.stt_audio_writer.write(audio_bytes)
 
         if self.is_streaming:
-            # if not self._sent_audio_start:
-            #     await self.event_to_server(
-            #         AudioStart(
-            #             rate=self.settings.mic.rate,
-            #             width=self.settings.mic.width,
-            #             channels=self.settings.mic.channels,
-            #         ).event()
-            #     )
-            #     self._sent_audio_start = True 
-            # Forward to server
+            if not self._sent_audio_start:
+                await self.event_to_server(
+                    AudioStart(
+                        rate=self.settings.mic.rate,
+                        width=self.settings.mic.width,
+                        channels=self.settings.mic.channels,
+                    ).event()
+                )
+                self._sent_audio_start = True
             await self.event_to_server(event)
         else:
             # Forward to wake word service
