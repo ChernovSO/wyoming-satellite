@@ -1473,6 +1473,9 @@ class WakeStreamingSatellite(SatelliteBase):
             return
 
         if Detection.is_type(event.type):
+            if self._pipeline_active:
+                _LOGGER.info("Interrupting active pipeline due to new wake word")
+                await self._close_current_pipeline()
             detection = Detection.from_event(event)
 
             # Check refractory period to avoid multiple back-to-back detections
