@@ -1410,11 +1410,11 @@ class WakeStreamingSatellite(SatelliteBase):
                     self.is_streaming = True
                     self._stream_started = time.monotonic()
                 try:
-                    await self.trigger_streaming_start()
+                    await self._start_new_pipeline()
                 except AttributeError:
                     pass
                 # RunPipeline (ASR→TTS)
-                await self._start_new_pipeline()
+                await self.trigger_streaming_start()
                 # отправляем pre-speech буфер
                 self._pipeline_active = True 
                 if self._follow_buffer and self._follow_buffer.getvalue():
