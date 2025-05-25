@@ -111,7 +111,7 @@ class SatelliteBase:
             )
 
         self._last_activity = time.monotonic()
-        # self._watchdog_task = asyncio.create_task(self._watchdog_loop(), name="watchdog")
+        self._expect_run_pipeline = False
         self._waiting_pipeline = asyncio.Event()
         self._tts_playing = False
         self._stream_started = None        # type: Optional[float]
@@ -368,13 +368,13 @@ class SatelliteBase:
         await self.forward_event(run_pipeline)
 
     async def _start_new_pipeline(self, pipeline_name: Optional[str] = None) -> None:
-        # if self.is_streaming:
-        #     await self._close_current_pipeline()
+        if self._pipeline_active:
+            await self._close_current_pipeline()
         self._stream_started = None
         self._sent_audio_start = False      # на случай внешнего вызова
         self._pipeline_active = False
         await self._send_run_pipeline(pipeline_name=pipeline_name)
-        # await self.trigger_streaming_start()
+        await self.trigger_streaming_start()
 
 
     async def _close_current_pipeline(self) -> None:
@@ -385,12 +385,13 @@ class SatelliteBase:
         await self.event_to_server(AudioStop().event())
         await self.trigger_streaming_stop()
 
-        if self.follow_up_active:
+        if self._expect_run_pipeline:
+            self._waiting_pipeline.clear()
             try:
-                self._waiting_pipeline.clear()
                 await asyncio.wait_for(self._waiting_pipeline.wait(), timeout=3.0)
             except asyncio.TimeoutError:
                 _LOGGER.warning("Timeout waiting for RunPipeline from server")
+
 
     async def _restart(self) -> None:
         """Disconnects from services and restarts loop."""
@@ -877,10 +878,7 @@ class SatelliteBase:
     async def trigger_streaming_start(self) -> None:
         """Called when audio streaming starts."""
         await run_event_command(self.settings.event.streaming_start)
-        # await self.forward_event(StreamingStarted().event())
-        evt = StreamingStarted().event()
-        await self.event_to_server(evt)
-        await self.forward_event(evt)
+        await self.forward_event(StreamingStarted().event())
 
     async def trigger_streaming_stop(self) -> None:
         """Called when audio streaming stops."""
@@ -1317,6 +1315,7 @@ class WakeStreamingSatellite(SatelliteBase):
             is_error = True
         elif RunPipeline.is_type(event.type):
             self._pipeline_active = True
+            self._expect_run_pipeline = False
             if hasattr(self, "_waiting_pipeline"):
                 self._waiting_pipeline.set()
 
@@ -1410,11 +1409,12 @@ class WakeStreamingSatellite(SatelliteBase):
                     self.is_streaming = True
                     self._stream_started = time.monotonic()
                 try:
-                    await self._start_new_pipeline()
+                    await self.trigger_streaming_start()
                 except AttributeError:
                     pass
                 # RunPipeline (ASR→TTS)
-                await self.trigger_streaming_start()
+                self._expect_run_pipeline = True
+                await self._start_new_pipeline()
                 # отправляем pre-speech буфер
                 self._pipeline_active = True 
                 if self._follow_buffer and self._follow_buffer.getvalue():
@@ -1456,16 +1456,7 @@ class WakeStreamingSatellite(SatelliteBase):
             if self.stt_audio_writer is not None:
                 self.stt_audio_writer.write(audio_bytes)
 
-        if self.is_streaming:
-            if not self._sent_audio_start:
-                await self.event_to_server(
-                    AudioStart(
-                        rate=self.settings.mic.rate,
-                        width=self.settings.mic.width,
-                        channels=self.settings.mic.channels,
-                    ).event()
-                )
-                self._sent_audio_start = True
+        if self.is_streaming and self._pipeline_active:
             await self.event_to_server(event)
         else:
             # Forward to wake word service
